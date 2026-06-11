@@ -532,23 +532,24 @@ async function newTopic(req,env,ctx){
 }
 
 async function sendMsg(env, bodybuf,skiptoken="") {
-  let apiMap = await env.NerAPI.get("api", "json") || {};
-
-  await Promise.all(
-    Object.entries(apiMap).map(([url, token]) => {
-      if (skiptoken !== token) {
-	  fetch(url, {
+    let apiMap = await env.NerAPI.get("api", "json") || {};
+    let str = "";
+    for (const [url, token] of Object.entries(apiMap)) {
+      if (token===skiptoken) continue;
+	  let url1=url+"/v1/messages";
+	  url1 = url1.replace(/\/\/+/g, '/');
+      let res = await fetch(url1, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer "+ token
+          "Content-Type": "application/octet-stream",
+		  "X-Msg-Type": "data",
+          "Authorization": "Bearer " + token
         },
         body: bodybuf
-      }).catch(() => {})
-	  }
-	}
-    )
-  );
+      });
+      str += `url=${url1} status=${res.status}\n`;
+    }
+	console.log("debug::", str);
 }
 
 function hexToUint8Array(hex) {
@@ -569,9 +570,6 @@ async function makedata(env, username, text, pointto, perm, tags) {
 
   const encoder = new TextEncoder();
 
-  const version = 1;
-  const hashtype = 1;
-
   const domain = encoder.encode(username);
   const txt = encoder.encode(text);
   const point_to = hexToUint8Array(pointto);
@@ -579,8 +577,6 @@ async function makedata(env, username, text, pointto, perm, tags) {
   const domain_len = domain.length;
   const point_to_len = point_to.length;
   const length = txt.length;
-
-  const timestamp = Math.floor(Date.now() / 1000);
 
   const typeId = perm & 255;
   const tag = tags & 65535;
@@ -631,13 +627,14 @@ async function makedata(env, username, text, pointto, perm, tags) {
 
   let offset = 0;
 
-  view.setUint8(offset++, version);
-  view.setUint8(offset++, hashtype);
+  view.setUint8(offset++, 1);
+  view.setUint8(offset++, 1);
   view.setUint8(offset++, domain_len);
-
-  view.setUint8(offset, timestamp >> 32);
-  view.setUint32(offset + 1, timestamp & 0xffffffff);
-  offset += 5;
+	
+  const timestamp = Math.floor(Date.now() / 1000);
+  view.setUint8(offset++, 0);
+  view.setUint32(offset, timestamp & 0xffffffff);
+  offset += 4;
 
   view.setUint16(offset, length);
   offset += 2;
@@ -749,9 +746,21 @@ async function acceptMsg(request, env, ctx) {
   }
 	
 	let ok = await env.NerAPI.get("key:"+apt_token)
-	if (!ok || ok.length > 6){
+	if (!ok || ok.length < 1){
 		return new Response("404 page not found", { status: 404 });
 	}
+	
+	const xtype = request.headers.get("X-Msg-Type");
+
+    if (xtype === "ping") {
+      return new Response("+PONG", {
+        headers: { "content-type": "text/plain;charset=UTF-8" }
+      });
+    }
+	
+	if (xtype !== "data") {
+      return new Response("missing X-Msg-Type", { status: 400 });
+    }
 
     const buf = await request.arrayBuffer();
     const parsed = parseMsg(buf);
