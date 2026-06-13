@@ -3,6 +3,7 @@ import newpost from "./markdown.html";
 import banuser from "./manager.html";
 
 const PAGE_SIZE = 16
+const BASE = 62;
 
 export default {
  async fetch(req, env, ctx) {
@@ -136,6 +137,54 @@ function checkBasicAuth(req, env) {
   }
 }
 
+function mask(str, key = 0) {
+  const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  let out = "";
+  for (let i = 0; i < str.length; i++) {
+    let v = (str.charCodeAt(i) + key) & 0xff;
+    const a = Math.floor(v / BASE);
+    const b = v % BASE;
+    out += ALPHABET[a] + ALPHABET[b];
+  }
+  return out;
+}
+
+function unmask(str, key = 0) {
+  const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  let out = "";
+  for (let i = 0; i < str.length; i += 2) {
+    const a = ALPHABET.indexOf(str[i]);
+    const b = ALPHABET.indexOf(str[i + 1]);
+    const v = a * BASE + b;
+    const orig = (v - key + 256) & 0xff;
+    out += String.fromCharCode(orig);
+  }
+  return out;
+}
+
+function mask_token(env,str) {
+  const keystr=env.privkey_base64;
+  const key=(keystr.charCodeAt(0)+keystr.charCodeAt(1)+keystr.charCodeAt(2)+keystr.charCodeAt(3)+keystr.charCodeAt(4))& 0xff;
+  const half = Math.floor(str.length / 2);
+  let out = str.slice(0, half)+"******";
+  let out1= str.slice(half, str.length)
+  out1=mask(out1,key)
+  return out+out1;
+}
+
+function unmask_token(env,str) {
+  const keystr=env.privkey_base64;
+  const key=(keystr.charCodeAt(0)+keystr.charCodeAt(1)+keystr.charCodeAt(2)+keystr.charCodeAt(3)+keystr.charCodeAt(4))& 0xff;
+  const pos = str.indexOf("******");
+  if (pos <= 0){
+	  return "Null"
+  }
+  let out = str.slice(0, pos);
+  const str1 = str.slice(pos + 6);
+  let out1=unmask(str1,key)
+  return out+out1;
+}
+
 async function manager(env,request) {
 	const auth = checkBasicAuth(request, env);
 	if (!auth.ok) {
@@ -161,7 +210,8 @@ async function manager(env,request) {
 
   for (const [u, t] of Object.entries(apiMap)) {
     url.push(u);
-    token.push(t);
+	const mtoken = mask_token(env,t);
+    token.push(mtoken);
   }
 
   const result = {
@@ -177,9 +227,13 @@ async function manager(env,request) {
 	 
 	if (req=="add_neighbor"){
 		if (!url1.startsWith("http")) {
-			return json({state:"neighbor url not start with http?://"})
+			return json({state:"neighbor url not start with http?://"});
 		}
-		await env.NerAPI.put("key:"+act,url1)
+		let url = await env.NerAPI.get("key:"+act);
+		if (url) {
+			return json({state:"token is exist"});
+		}
+		await env.NerAPI.put("key:"+act,url1);
 		
 		let apiMap = await env.NerAPI.get("api", "json") || {};
 		
@@ -191,8 +245,8 @@ async function manager(env,request) {
 	}
   
 	if (req=="del_neighbor") {
-		
-		let url = await env.NerAPI.get("key:"+act)
+		const ctoken=unmask_token(env,act);
+		let url = await env.NerAPI.get("key:"+ctoken)
 		if (!url) {
 			return json({state:"token not exist"})
 		}
@@ -201,15 +255,103 @@ async function manager(env,request) {
 		delete apiMap[url];
 		await env.NerAPI.put("api", JSON.stringify(apiMap));
 		
-		await env.NerAPI.delete("key:"+act);
+		await env.NerAPI.delete("key:"+ctoken);
 		
 		return json({state:"OK"})
 	}
+	
+	if (req=="ban"){
+		let url = await env.NerAPI.get("ban:"+act);
+		if (url) {
+			return json({state:"user is banned"});
+		}
+		await env.NerAPI.put("ban:"+act,url1);
+		
+		return json({state:"OK"})
+	}
+	
+	if (req=="unban"){
+		let url = await env.NerAPI.get("ban:"+act);
+		if (!url) {
+			return json({state:"user not ban"});
+		}
+		await env.NerAPI.delete("ban:"+act);
+		
+		return json({state:"OK"})
+	}
+	
+	if (req=="perm"){
+		const num1=parseInt(url1)
+		if (Number.isNaN(num1)) {
+			return json({state:"new perm is null"})
+		}
+		const result = await changePost(env,act,1,num1)
+		if (result){
+			return json({state:"set-perm: OK"})
+		}else{
+			return json({state:"set-perm: fail"})
+		}
+	}
+	
+	if (req=="tag"){
+		const num1=parseInt(url1)
+		if (Number.isNaN(num1)) {
+			return json({state:"new tag invalid"})
+		}
+		const result = await changePost(env,act,2,num1)
+		if (result){
+			return json({state:"OK"})
+		}else{
+			return json({state:"set-tag: fail"})
+		}
+	}
+	
 	return json({state:"not realize"})
     }
 
     return new Response("Only POST allowed", { status: 403 });
 }
+async function changePost(env,topichex,cmd,set){
+	
+ let thread = await env.FORUM.get("thread:"+topichex,"json")
+
+ if(!thread)
+  return false
+
+ const post = thread.find(p=>p.hex===topichex)
+
+ if(!post)
+	return false
+
+ let changed=false;
+ 
+ if (cmd===1){
+	if (set===0) {
+		changed=true;
+		post.extperm=0;
+		delete post.extperm
+	} else if (set===1) {
+		changed=true;
+		post.extperm=1;
+	}
+ } else if (cmd===2){
+	if (set!==0) {
+		changed=true;
+		post.tag = set;
+	}
+ }
+	
+ if (changed){
+  await env.FORUM.put(
+   "thread:"+topichex,
+   JSON.stringify(thread)
+  )
+  if (cmd===2){await updateIndexReply(env,topichex,"","",set);}
+ }
+ 
+  return changed;
+}
+
 
 async function login(req,env){
 	const auth = checkBasicAuth(req, env);
@@ -290,8 +432,11 @@ async function viewThread(req,env,path){
   me:p.user===firstUser
 
  }))
- 
- if (data[0]?.perm !== 0) {
+ let experm_set=false;
+ if ('extperm' in (data[0] || {})) {
+	 if (data[0]?.extperm === 1){experm_set=true;}
+ }
+ if ((data[0]?.perm !== 0)||experm_set) {
 	 const auth = checkBasicAuth(req, env);
 		if (!auth.ok) {
 			if (auth.status === 401) {
@@ -380,7 +525,7 @@ async function appendIndex(env,item){
 
 }
 
-async function updateIndexReply(env,hex,time,title1){
+async function updateIndexReply(env,hex,time,title1,tag1=0){
 
  let list = await env.FORUM.get("index:list","json")
 
@@ -390,10 +535,15 @@ async function updateIndexReply(env,hex,time,title1){
 
   if(list[i].hex===hex){
 
+   if (time!==""){
    list[i].reply++
    list[i].lasttime=time
+   }
    if (title1!==""){
    list[i].title=title1
+   }
+   if (tag1!==0){
+   list[i].tag=tag1
    }
    break
 
@@ -820,6 +970,11 @@ async function handleMsg(env,parsed,buf1,skiptoken) {
 		return;
 	}
 	
+	const domain_ban = await env.NerAPI.get("ban:"+domain_str);
+	if (domain_ban){
+		console.log("domain is banned");
+		return;
+	}
 	
 	let cacheKey = await env.NerAPI.get("keycache:"+domain_str,"json")
 	
