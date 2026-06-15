@@ -19,15 +19,9 @@ export default {
 		});
 	   }
 	   
-	   const auth = checkBasicAuth(req, env);
+	   const auth = await checkBasicAuth(req, env);
 	   if (!auth.ok) {
-			if (auth.status === 401) {
-			return new Response("Unauthorized", {
-				status: 401,
-				headers: { "WWW-Authenticate": 'Basic realm="Login required"' }
-			});
-			}
-			return new Response("Forbidden", { status: 403 });
+			return new Response("Login required", { status: 403 });
 	  }
 	  if (manager == "newpost") {
 		return new Response(newpost, {
@@ -35,7 +29,9 @@ export default {
 		});
 	  }
 	  if (manager == "banuser") {
-		return new Response(banuser, {
+		const csrftoken=getCookie(req,"kepcsrf")
+		const htmlmangr=banuser.replace("{{ .Tokenk1 }}",csrftoken)
+		return new Response(htmlmangr, {
 			headers: { "content-type": "text/html;charset=UTF-8" }
 		});
 	  }
@@ -59,29 +55,17 @@ export default {
      return viewThread(req, env, path)
 
     if (req.method === "POST") {
-		const auth = checkBasicAuth(req, env);
+		const auth = await checkBasicAuth(req, env);
 		if (!auth.ok) {
-			if (auth.status === 401) {
-			return new Response("Unauthorized", {
-				status: 401,
-				headers: { "WWW-Authenticate": 'Basic realm="Login required"' }
-			});
-			}
-			return new Response("Forbidden", { status: 403 });
+			return new Response("Login required", { status: 403 });
 		}
 		return postReply(req, env, ctx, path)
 	}
    }
    
    if (path === "/index.php" && req.method === "POST") {
-	   const auth = checkBasicAuth(req, env);
+	   const auth = await checkBasicAuth(req, env);
 	   if (!auth.ok) {
-			if (auth.status === 401) {
-			return new Response("Unauthorized", {
-				status: 401,
-				headers: { "WWW-Authenticate": 'Basic realm="Login required"' }
-			});
-			}
 			return new Response("access deny", { status: 403 });
 	  }
 		return newTopic(req, env, ctx)
@@ -111,7 +95,21 @@ function rand(){
  return crypto.randomUUID().replaceAll("-","")
 }
 
-function checkBasicAuth(req, env) {
+function getCookie(request, name) {
+  const cookie = request.headers.get("Cookie");
+  if (!cookie) return null;
+  const match = cookie.match(new RegExp(`(^| )${name}=([^;]+)`));
+  return match ? match[2] : null;
+}
+
+async function checkBasicAuth(req, env) {
+  const csrftoken=getCookie(req,"kepcsrf");
+  const server_sess = await sha256sum(env.USER+";"+env.PASSWD+";"+csrftoken);
+  const client_sess=getCookie(req,"kepsess")
+  if (server_sess===client_sess) {
+	  return { ok: true };
+  }
+  
   const auth = req.headers.get("Authorization");
   if (!auth || !auth.startsWith("Basic ")) {
     return { ok: false, status: 401 };
@@ -186,22 +184,22 @@ function unmask_token(env,str) {
 }
 
 async function manager(env,request) {
-	const auth = checkBasicAuth(request, env);
+	const auth = await checkBasicAuth(request, env);
 	if (!auth.ok) {
-		if (auth.status === 401) {
-		return new Response("Unauthorized", {
-			status: 401,
-			headers: { "WWW-Authenticate": 'Basic realm="Login required"' }
-		});
-		}
 		return new Response("access deny", { status: 403 });
 	}
     if (request.method === "POST") {
+	  const csrftoken=getCookie(request,"kepcsrf")
       const data = await request.json();
 
       const req = data.req;
       const act = data.act;
       const url1 = data.url;
+	  const csrf1 = data.csrf;
+	  
+	  if (csrf1 !== csrftoken) {
+		  return new Response("csrf token err", { status: 400 });
+	  }
 	 
 	if (req=="list"){
   const apiMap = await env.NerAPI.get("api", "json") || {};
@@ -354,7 +352,7 @@ async function changePost(env,topichex,cmd,set){
 
 
 async function login(req,env){
-	const auth = checkBasicAuth(req, env);
+	const auth = await checkBasicAuth(req, env);
 		if (!auth.ok) {
 			if (auth.status === 401) {
 			return new Response("Unauthorized", {
@@ -365,23 +363,41 @@ async function login(req,env){
 			return new Response("Forbidden", { status: 403 });
 		}
 const domain = env.domain;
-return json({
+const csrftoken=rand();
+
+const session = await sha256sum(env.USER+";"+env.PASSWD+";"+csrftoken);
+
+const headers = new Headers();
+headers.append("content-type","application/json");
+headers.append("Set-Cookie","kepcsrf="+csrftoken+"; Path=/; Max-Age=604800; HttpOnly; Secure; SameSite=Lax");
+headers.append("Set-Cookie","kepsess="+session+"; Path=/; Max-Age=604800; HttpOnly; Secure; SameSite=Lax")
+
+return new Response(JSON.stringify({
   status:1,
   user:domain,
-  rand: rand()
- })
+  nonce: csrftoken
+ }),{ headers })
+}
+
+async function sha256sum(text) {
+  const data = new TextEncoder().encode(text);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+  return hashHex;
 }
 
 async function me(req,env){
-	const auth = checkBasicAuth(req, env);
+	const auth = await checkBasicAuth(req, env);
 		if (!auth.ok) {
 			return json({status:0})
 		}
 		const domain = env.domain;
+		const csrftoken=getCookie(req,"kepcsrf")
  return json({
   status:1,
   user:domain,
-  rand: rand()
+  nonce: csrftoken
  })
 }
 
@@ -437,15 +453,9 @@ async function viewThread(req,env,path){
 	 if (data[0]?.extperm === 1){experm_set=true;}
  }
  if ((data[0]?.perm !== 0)||experm_set) {
-	 const auth = checkBasicAuth(req, env);
+	 const auth = await checkBasicAuth(req, env);
 		if (!auth.ok) {
-			if (auth.status === 401) {
-			return new Response("Unauthorized", {
-				status: 401,
-				headers: { "WWW-Authenticate": 'Basic realm="Login required"' }
-			});
-			}
-			return new Response("Forbidden", { status: 403 });
+			return new Response("Login required", { status: 403 });
 		}
  }
 
@@ -460,6 +470,13 @@ async function postReply(req,env,ctx,path){
  const body = await req.json()
 
  const text = body.post_payload
+ const nonce = body.nonce
+ 
+ const csrftoken=getCookie(req,"kepcsrf")
+ 
+ if (!nonce.startsWith(csrftoken)) {
+	 return new Response("post format err")
+ }
 
  if(!text || text.length>20000)
   return json({status:"post format err"})
@@ -566,11 +583,18 @@ async function newTopic(req,env,ctx){
  const markdown = form.get("markdown") || ""
  const tag = parseInt(form.get("tag") || "0")
  const typeid = parseInt(form.get("typeid") || "0")
+ const nonce = form.get("nonce") || ""
 
  const pointto = form.get("pointto")
  const pointtoroot = form.get("pointtoroot")
+ 
+ const csrftoken=getCookie(req,"kepcsrf")
+ 
+ if (!nonce.startsWith(csrftoken)) {
+	 return new Response("post format err")
+ }
 
- if(!markdown || markdown.length>20000)
+ if(!markdown || markdown.length>40000)
 	return new Response("post format err")
 
  const time = now()
