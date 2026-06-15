@@ -104,10 +104,14 @@ function getCookie(request, name) {
 
 async function checkBasicAuth(req, env) {
   const csrftoken=getCookie(req,"kepcsrf");
-  const server_sess = await sha256sum(env.USER+";"+env.PASSWD+";"+csrftoken);
   const client_sess=getCookie(req,"kepsess")
-  if (server_sess===client_sess) {
+  if (csrftoken && client_sess) {
+  const [c_sess,deadline] = client_sess.split("_");
+  if (Number(deadline) > now()) {
+  const server_sess = await sha256sum(env.USER+";"+env.PASSWD+";"+csrftoken+";"+deadline);
+  if (server_sess===c_sess) {
 	  return { ok: true };
+  }}
   }
   
   const auth = req.headers.get("Authorization");
@@ -364,13 +368,14 @@ async function login(req,env){
 		}
 const domain = env.domain;
 const csrftoken=rand();
+const deadline = String(now()+604800);
 
-const session = await sha256sum(env.USER+";"+env.PASSWD+";"+csrftoken);
+const session = await sha256sum(env.USER+";"+env.PASSWD+";"+csrftoken+";"+deadline);
 
 const headers = new Headers();
 headers.append("content-type","application/json");
 headers.append("Set-Cookie","kepcsrf="+csrftoken+"; Path=/; Max-Age=604800; HttpOnly; Secure; SameSite=Lax");
-headers.append("Set-Cookie","kepsess="+session+"; Path=/; Max-Age=604800; HttpOnly; Secure; SameSite=Lax")
+headers.append("Set-Cookie","kepsess="+session+"_"+deadline+"; Path=/; Max-Age=604800; HttpOnly; Secure; SameSite=Lax")
 
 return new Response(JSON.stringify({
   status:1,
