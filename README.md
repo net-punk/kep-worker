@@ -42,7 +42,8 @@ cf worker 搭建个人 bbs 论坛
 #### 变量解释
 
 - domain: kep验证域名，联机时候用，单机随便填
-- enable_limit: 开启速率限制
+- enable_limit: 开启速率限制（需要添加NerLimit速率限制器）
+- enable_metadata: 开启metadata显示（需要添加metaLimit速率限制器）
 - USER: 登录用户名
 - PASSWD: 登录密码
 - mainkey_base64: `openssl base64 -in mainkey.pub -out mainkey.txt`获取
