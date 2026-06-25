@@ -71,6 +71,16 @@ export default {
 		return newTopic(req, env, ctx)
    }
    
+   if (path.startsWith("/t/topic/") && req.method === "GET") {
+      const postid = path.split("/")[3];
+	  if (/^[0-9a-f]+$/.test(postid)) {
+          return Response.redirect(
+            `${url.origin}/index.php?topic=${postid}`,
+            302
+          );
+	  }
+   }
+   
    if (path === "/manager")
     return manager(env,req)
 
