@@ -1566,6 +1566,10 @@ async function addReply(env,point_to,selfhex,username,text,tag,perm){
   
   return true
  }
+ 
+ const checkpost = thread.find(p=>p.hex===selfhex)
+ if(checkpost)
+	return false
 
  const id = thread.length+1
 
@@ -1606,6 +1610,10 @@ async function addTopic(env,hex,text,tag,perm,username){
  const pointtoroot = ""
 
  if(!markdown || markdown.length>20000)
+  return false
+ let checkthd = await env.FORUM.get("thread:"+hex,"json")
+
+ if(checkthd)
   return false
 
  const time = now()
